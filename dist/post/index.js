@@ -149996,8 +149996,9 @@ const GITHUB_META_IP_RANGES = {
  *   - One destination association = one `network.egress.peers[]` item × one
  *     `proc_trees[]` item. A peer with no proc_trees emits one association
  *     with lineage `unknown (not recorded)`.
- *   - The record is egress-centric — it is NOT a process inventory; a
- *     process that made no recorded egress may not appear.
+ *   - Egress counts and comparisons remain egress-only. Recorded local
+ *     network associations render separately as current-record evidence,
+ *     never as outbound destinations. This is NOT a process inventory.
  *   - The evidence model is lossless; the comment projection deduplicates
  *     destination identities so capture multiplicity never becomes comparison
  *     churn.
@@ -150113,6 +150114,7 @@ const GITHUB_META_IP_RANGES = {
  *   telemetry: JobTelemetry
  *   assertions: JobAssertion[]
  *   edges: ReviewEdge[]
+ *   local_edges?: ReviewEdge[]
  *   counts: EdgeCounts
  * }} JobSummary
  */
@@ -150653,6 +150655,9 @@ function summarizeProfile(profile) {
   /** @type {Record<string, any>[]} */
   const peers = Array.isArray(p?.network?.egress?.peers) ? p.network.egress.peers : []
   const edges = peers.flatMap((peer, index) => peerEdges(peer, index)).sort(edgeComparator)
+  /** @type {Record<string, any>[]} */
+  const localPeers = Array.isArray(p?.network?.local?.peers) ? p.network.local.peers : []
+  const localEdges = localPeers.flatMap((peer, index) => peerEdges(peer, index)).sort(edgeComparator)
   const egressTelemetry = p?.telemetry?.network?.egress || {}
   /** @type {JobAssertion[]} */
   const assertions = (Array.isArray(p?.assertions) ? p.assertions : []).map((/** @type {Record<string, any>} */ assertion) => ({
@@ -150707,6 +150712,7 @@ function summarizeProfile(profile) {
     },
     assertions,
     edges,
+    local_edges: localEdges,
     counts: edgeCounts(edges, peers.length),
   }
 }
@@ -150831,6 +150837,7 @@ function buildRunReview(input) {
       },
       assertions: Array.isArray(j.assertions) ? j.assertions : [],
       edges: (j.edges || []).slice().sort(edgeComparator),
+      local_edges: (j.local_edges || []).slice().sort(edgeComparator),
     }))
     .map((j) => ({ ...j, counts: edgeCounts(j.edges, j.flow_count) }))
     // Canonical job order: alphabetic by `workflow / job`.
@@ -150952,6 +150959,7 @@ function exportReviewModel(review) {
       telemetryDiscrepancies: telemetryDiscrepancies(j),
       assertions: j.assertions,
       counts: j.counts,
+      ...(j.local_edges !== undefined && j.local_edges.length > 0 ? { local_edges: j.local_edges.map(exportLocalEdge) } : {}),
       edges: j.edges.map((e) => ({
         remote_address: e.remote_address,
         remote_names: e.remote_names,
@@ -150968,6 +150976,27 @@ function exportReviewModel(review) {
       })),
     })),
   }
+}
+
+/**
+ * Keep the same path/argv embargo as the egress export.
+ * @param {ReviewEdge} edge
+ */
+function exportLocalEdge(edge) {
+    return {
+        remote_address: edge.remote_address,
+        remote_names: edge.remote_names,
+        remote_ports: edge.remote_ports,
+        protocol: edge.protocol,
+        result: edge.result,
+        detections: edge.detections,
+        lineage_recorded: edge.lineage_recorded,
+        pid: edge.pid,
+        process: edge.process,
+        ancestry: edge.ancestry,
+        github_step: edge.github_step,
+        notes: edgeNotes(edge),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -151478,12 +151507,14 @@ function renderTreeChildren(node, prefix, lines, { destinations, steps = true, d
   })
 }
 
+/** @typedef {{ defang?: boolean, detections?: boolean }} RenderJobTreeOptions */
+
 /**
  * Render a job's lossless shared-prefix lineage tree. Destination leaves stay
  * attached to the terminal recorded process; no ×N grouping or trust labels.
  * @param {ReviewJob} job
  * @param {ReviewEdge[]} [edges]
- * @param {{ defang?: boolean }} [opts]
+ * @param {RenderJobTreeOptions} [opts]
  */
 function renderJobTree(job, edges = job.edges, opts = {}) {
   /** @type {string[]} */
@@ -151499,10 +151530,47 @@ function renderJobTree(job, edges = job.edges, opts = {}) {
       destinations: true,
       steps: true,
       defang: opts.defang !== false,
+      detections: opts.detections === true,
       inheritedSteps: inheritSteps(child, new Set()),
     })
   })
   return lines.join("\n")
+}
+
+/**
+ * Local evidence is a snapshot, not an egress delta. Keep its process
+ * associations rather than applying destination-only comment deduplication:
+ * a benign resolver client must not hide another client's recorded detection.
+ * @param {ReviewJob} job
+ * @param {ReviewEdge[]} shown
+ * @returns {string[]}
+ */
+function renderLocalNetworkEvidence(job, shown) {
+    const total = (job.local_edges ?? []).length
+    if (total === 0) return []
+    const lines = ["<strong>Local network evidence (current record; not outbound)</strong>", ""]
+    if (shown.length > 0) {
+        lines.push("<pre>", renderJobTree(job, shown, { detections: true }), "</pre>", "")
+    }
+    if (shown.length < total) {
+        lines.push(`<sub>rendered ${shown.length} of ${total} local destination associations</sub>`, "")
+    }
+    return lines
+}
+
+/**
+ * Retain meaningful local process evidence before unrelated egress noise.
+ * Each direction stays in a separate projection and comparison namespace.
+ * @param {ReviewJob} job
+ * @returns {ReviewEdge[]}
+ */
+function reviewEvidenceEdges(job) {
+    const local = job.local_edges ?? []
+    return [
+        ...local.filter(edge => hasRecordedDetection(edge)),
+        ...job.edges,
+        ...local.filter(edge => !hasRecordedDetection(edge)),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -152534,6 +152602,7 @@ function changeAccounting(review) {
 function machineSummaryMarker(review, accounting) {
   const { chains, destinations } = commentRegisterCounts(review.jobs)
   const comparing = review.comparison !== null
+  const localAssociations = review.jobs.reduce((count, job) => count + (job.local_edges ?? []).length, 0)
   const summary = {
     contract: CONTRACT_VOCAB.version,
     githubMeta: GITHUB_META_RETRIEVED,
@@ -152553,6 +152622,8 @@ function machineSummaryMarker(review, accounting) {
     destinations,
     recorded: review.recordedThrough !== "" ? review.recordedThrough : null,
     kinds: ["network"],
+    // Additive, versioned extension; existing contract counts stay egress-only.
+    ...(localAssociations > 0 ? { localEvidence: { version: 1, associations: localAssociations, comparison: "not-compared" } } : {}),
   }
   // `--` is escaped inside JSON strings so a hostile record-sourced value
   // can never terminate the HTML comment; JSON.parse restores the bytes.
@@ -152574,6 +152645,9 @@ function renderCommentBody(review, kept, { explainerOpen = false } = {}) {
   lines.push(headlineSentence(review))
   lines.push("")
   lines.push(...metaBlock(review, accounting))
+  if (review.jobs.some(job => (job.local_edges ?? []).length > 0)) {
+    lines.push("> <sub>Destination totals and comparisons above are outbound-only; local evidence below is the current record.</sub>")
+  }
   lines.push("")
 
   const previousSha = review.comparison ? review.comparison.previousSha : ""
@@ -152586,16 +152660,19 @@ function renderCommentBody(review, kept, { explainerOpen = false } = {}) {
     // fence; only a workload delta makes a changed job (bold row, open
     // fold, changed count).
     const hasDelta = changed || backgroundDelta(delta ?? null) > 0
-    const keptCount = kept.get(job.id) ?? job.edges.length
-    const retained = new Set(retentionOrder(job.edges).slice(0, keptCount))
+    const evidence = reviewEvidenceEdges(job)
+    const keptCount = kept.get(job.id) ?? evidence.length
+    const retained = new Set(retentionOrder(evidence).slice(0, keptCount))
     const shownRaw = job.edges.filter((e) => retained.has(e))
+    const localEdges = job.local_edges ?? []
+    const shownLocal = localEdges.filter(edge => retained.has(edge))
     // One block per job: every recorded root of the job's projection — no
     // attribution partition, no category labels.
     const shown = commentEdges(shownRaw)
     // An empty projection renders a plain row that keeps the job's
     // Execution Profile link when known — an empty egress projection never
     // implies Garnet observed nothing.
-    if (job.edges.length === 0 && !hasDelta) {
+    if (job.edges.length === 0 && localEdges.length === 0 && !hasDelta) {
       const link = profilePermalink(job, review.appUrl, "pr_comment")
       const profilePart =
         link !== ""
@@ -152610,7 +152687,7 @@ function renderCommentBody(review, kept, { explainerOpen = false } = {}) {
     // collapsed — their rows carry the counts.
     const open = changed && accounting.changedJobs <= FOLD_OPEN_BUDGET
     lines.push(
-      `<details${open ? " open" : ""}><summary>${jobSummaryLine(job, { delta: delta ?? null, treeEdges: shown })}</summary>`,
+      `<details${open ? " open" : ""}><summary>${jobSummaryLine(job, { delta: delta ?? null, treeEdges: shown })}${localEdges.length > 0 ? " · local network evidence" : ""}</summary>`,
     )
     lines.push("")
     /** @type {string[]} */
@@ -152641,6 +152718,7 @@ function renderCommentBody(review, kept, { explainerOpen = false } = {}) {
       lines.push(`<sub>${fenceNotes.join(" · ")}</sub>`)
       lines.push("")
     }
+    lines.push(...renderLocalNetworkEvidence(job, shownLocal))
     const link = profilePermalink(job, review.appUrl, "pr_comment")
     if (link !== "") {
       lines.push(
@@ -152706,6 +152784,8 @@ function renderMinimalComment(review) {
   head.push(headlineSentence(review))
   head.push("")
   head.push(`<sub>${truncationLine(0, review.counts.associations)}</sub>`)
+  const localCount = review.jobs.reduce((count, job) => count + (job.local_edges ?? []).length, 0)
+  if (localCount > 0) head.push(`<sub>rendered 0 of ${localCount} local destination associations</sub>`)
   return head.join("\n")
 }
 
@@ -152734,10 +152814,11 @@ function renderRunReview(review, opts = {}) {
 
   // Global round-robin retention order: round r keeps the r-th edge of each
   // job's retention queue, jobs visited in canonical order.
-  const queues = review.jobs.map((j) => ({ id: j.id, total: j.edges.length }))
+  const queues = review.jobs.map((j) => ({ id: j.id, total: reviewEvidenceEdges(j).length }))
+  const associationCount = queues.reduce((count, queue) => count + queue.total, 0)
   /** @type {{id: number}[]} */
   const order = []
-  for (let round = 0; order.length < review.counts.associations; round += 1) {
+  for (let round = 0; order.length < associationCount; round += 1) {
     for (const q of queues) {
       if (round < q.total) order.push({ id: q.id })
     }
@@ -152757,7 +152838,7 @@ function renderRunReview(review, opts = {}) {
   // Largest edge total whose serialized body fits the budget (binary search
   // — rendering is deterministic, so this is reproducible).
   let lo = 0
-  let hi = review.counts.associations - 1
+  let hi = associationCount - 1
   let best = bodyFor(0)
   while (lo <= hi) {
     const mid = (lo + hi) >> 1
@@ -153194,6 +153275,9 @@ function renderStepSummaryFooter(job, appUrl) {
  */
 function renderProfileSummary(job, appUrl, keptDestinations, previewAssertions) {
   const lines = [`## ${VOCAB.stepSummaryHeading}`, ""]
+  const localEdges = job.local_edges ?? []
+  const localKeep = Math.min(keptDestinations, localEdges.length)
+  const egressKeep = keptDestinations === Infinity ? Infinity : Math.max(0, keptDestinations - localEdges.length)
 
   lines.push("### Workload Summary", "")
   /** @type {[string, string][]} */
@@ -153232,7 +153316,7 @@ function renderProfileSummary(job, appUrl, keptDestinations, previewAssertions) 
     lines.push(VOCAB.emptyPeers)
     lines.push("")
   } else {
-    const keep = keptDestinations === Infinity ? lineageRows.length : keptDestinations
+    const keep = egressKeep === Infinity ? lineageRows.length : egressKeep
     const retained = new Set(lineageRetentionOrder(lineageRows).slice(0, keep))
     const shown = lineageRows.filter((row) => retained.has(row))
     lines.push("Keyed by execution chain; repeated destination names within a chain are collapsed.", "")
@@ -153256,6 +153340,9 @@ function renderProfileSummary(job, appUrl, keptDestinations, previewAssertions) 
     lines.push("</details>")
     lines.push("")
   }
+
+  const retainedLocal = new Set(retentionOrder(reviewEvidenceEdges(job).filter(edge => localEdges.includes(edge))).slice(0, localKeep))
+  lines.push(...renderLocalNetworkEvidence(job, localEdges.filter(edge => retainedLocal.has(edge))))
 
   const telemetry = renderTelemetry(job)
   if (telemetry !== "") {
@@ -153298,7 +153385,7 @@ function renderStepSummary(profiles, opts = {}) {
   const full = render(new Map())
   if (Buffer.byteLength(full, "utf8") <= STEP_SUMMARY_BUDGET) return full
 
-  const rowCounts = jobs.map((job) => buildLineageRows(job.edges).length)
+  const rowCounts = jobs.map((job) => buildLineageRows(job.edges).length + (job.local_edges ?? []).length)
   const totalLineages = rowCounts.reduce((sum, count) => sum + count, 0)
   /** @type {number[]} */
   const order = []
@@ -153347,13 +153434,16 @@ function renderMinimalStepSummary(jobs) {
     (sum, job) => sum + buildLineageRows(job.edges).length,
     0,
   )
-  return [
+  const localCount = jobs.reduce((count, job) => count + (job.local_edges ?? []).length, 0)
+  const lines = [
     `## ${VOCAB.stepSummaryHeading}`,
     "",
     `${jobs.length} job${jobs.length === 1 ? "" : "s"} recorded`,
     "",
     `<sub>rendered 0 of ${lineages} execution chains</sub>`,
-  ].join("\n")
+  ]
+  if (localCount > 0) lines.push(`<sub>rendered 0 of ${localCount} local destination associations</sub>`)
+  return lines.join("\n")
 }
 
 /**

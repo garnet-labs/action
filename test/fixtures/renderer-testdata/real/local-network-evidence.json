@@ -1,0 +1,104 @@
+{
+  "description": "Sanitized metadata-only derivative of a contained replay profile. The observed App comment (contract 6.10.0) omitted the sckit process while the profile retained the local peers below. Unrelated egress is omitted. Repository, run, profile, commit, timestamp, step and PID values are synthetic. No raw comment, package bytes, host metadata, argv or executable paths are included.",
+  "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "profiles": [
+    {
+      "id": "01900000-0000-7000-8000-000000000001",
+      "data": {
+        "timestamp": "2026-01-01T00:00:00Z",
+        "scenarios": {
+          "github": {
+            "repository": "example/renderer-fixture",
+            "run_id": "1",
+            "job": "local-process",
+            "workflow": "Local network fixture",
+            "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "server_url": "https://github.com"
+          }
+        },
+        "network": {
+          "local": {
+            "peers": [
+              {
+                "result": "attention",
+                "detections": [
+                  "exec_from_unusual_dir",
+                  "flow",
+                  "hidden_elf_exec"
+                ],
+                "protocol": "UDP",
+                "remote_address": "127.0.0.1",
+                "remote_names": [
+                  "localhost"
+                ],
+                "remote_ports": [
+                  "53 (dns)"
+                ],
+                "proc_trees": [
+                  {
+                    "pid": 4242,
+                    "process": "sckit",
+                    "github_step": "Contained observation",
+                    "ancestry": [
+                      "systemd",
+                      "hosted-compute-agent",
+                      "Runner.Listener",
+                      "Runner.Worker",
+                      "bash",
+                      "bash",
+                      "timeout",
+                      "sudo",
+                      "unshare",
+                      "python3.12",
+                      "strace",
+                      "sckit"
+                    ]
+                  }
+                ]
+              },
+              {
+                "result": "attention",
+                "detections": [
+                  "exec_from_unusual_dir",
+                  "flow",
+                  "hidden_elf_exec"
+                ],
+                "protocol": "UDP",
+                "remote_address": "::1",
+                "remote_names": [
+                  "ip6-localhost",
+                  "ip6-loopback",
+                  "localhost"
+                ],
+                "remote_ports": [
+                  "53 (dns)"
+                ],
+                "proc_trees": [
+                  {
+                    "pid": 4242,
+                    "process": "sckit",
+                    "github_step": "Contained observation",
+                    "ancestry": [
+                      "systemd",
+                      "hosted-compute-agent",
+                      "Runner.Listener",
+                      "Runner.Worker",
+                      "bash",
+                      "bash",
+                      "timeout",
+                      "sudo",
+                      "unshare",
+                      "python3.12",
+                      "strace",
+                      "sckit"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
