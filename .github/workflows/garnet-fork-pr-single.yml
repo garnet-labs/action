@@ -1,0 +1,32 @@
+name: Garnet Fork PR Single Job Test
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  single:
+    name: Fork relay single
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start Garnet Runtime Review
+        uses: garnet-org/action@main
+
+      - name: Generate observable runtime activity
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_file="${RUNNER_TEMP}/garnet-fork-single-example.html"
+          curl --fail --silent --show-error --location --max-time 30 \
+            https://example.org/ \
+            --output "${output_file}"
+          test -s "${output_file}"
