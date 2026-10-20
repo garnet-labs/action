@@ -1,0 +1,68 @@
+name: Garnet Fork PR Matrix Test
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Fork relay Node ${{ matrix.node }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 20
+            marker_url: https://example.com/
+            marker_host: example.com
+          - node: 22
+            marker_url: https://example.org/
+            marker_host: example.org
+          - node: 24
+            marker_url: https://example.net/
+            marker_host: example.net
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Start Garnet Runtime Review
+        uses: garnet-org/action@main
+        with:
+          job_index: ${{ strategy.job-index }}
+
+      - name: Generate Node.js ${{ matrix.node }} marker activity
+        shell: bash
+        env:
+          MARKER_URL: ${{ matrix.marker_url }}
+          EXPECTED_HOST: ${{ matrix.marker_host }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            const markerURL = new URL(process.env.MARKER_URL);
+            if (markerURL.hostname !== process.env.EXPECTED_HOST) {
+              throw new Error(`Unexpected marker host: ${markerURL.hostname}`);
+            }
+
+            const response = await fetch(markerURL);
+            if (!response.ok) {
+              throw new Error(`Marker request failed with HTTP ${response.status}`);
+            }
+
+            const body = await response.text();
+            if (body.length === 0) {
+              throw new Error("Marker response was empty");
+            }
+
+            console.log(`Node ${process.version} requested ${markerURL.hostname}`);
+          '
